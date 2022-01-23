@@ -67,6 +67,8 @@ class DownloadLibrary:
         self.cache_data = self._load_cache_data(self.cache_file)
         self.purchase_keys = self.purchase_keys if self.purchase_keys else self._get_purchase_keys()  # noqa: E501
 
+        logger.info('Started at {starttime}'.format(starttime=time.strftime('%Y-%m-%d-%H%M%S')))
+
         #if we are only verifying, determine if we need to get information from web.
         self.need_verify_update = False
         if self.verifyonly is True:
@@ -474,17 +476,36 @@ class DownloadLibrary:
         for cache_file_key in self.cache_data.keys():
             cache_file_info = self.cache_data.get(cache_file_key, {})
 
-            #If file was already verified and verifyall is not set, skip to the next file.
+            #If verifyall is set, verify everything.
             if not(self.verifyall is True):
+                cache_purchase_key, cache_purchase_file = cache_file_key.split(":",1)
+                #Only verify trove files if trove is set.
+                if not(self.trove) and (cache_purchase_key == 'trove'):
+                    continue
+                #Is the file in the purchased keys list?
+                if not(cache_purchase_key in self.purchase_keys):
+                    continue
+                #If file was already verified and verifyall is not set, skip to the next file.
                 if 'verified' in cache_file_info:
                     if cache_file_info['verified']:
+                        logger.debug("DEBUG: Verified file found: {local_filename_rel} Verified: {verified}"
+                                .format(local_filename_rel=cache_file_info['local_filename_rel'],verified=cache_file_info['verified']))
                         continue
 
             if 'local_filename_rel' in cache_file_info:
                 local_filename = os.path.join(self.library_path, cache_file_info['local_filename_rel'])
+                quarantine_filename = os.path.join(self.library_path, 'quarantine', cache_file_info['local_filename_rel'])
+                quarantine_folder = os.path.dirname(quarantine_filename)
                 md5_hash = hashlib.md5()
                 try:
                     with open(local_filename,'rb') as f:
+                        if 'verified' in cache_file_info:
+                            logger.debug("INFO: Checking md5 hash for Verified: {verified} File: {local_filename_rel}"
+                                    .format(verified=cache_file_info['verified'],local_filename_rel=cache_file_info['local_filename_rel']))
+                        else:
+                            logger.debug("INFO: Checking md5 hash for unverified File: {local_filename_rel}"
+                                    .format(local_filename_rel=cache_file_info['local_filename_rel']))
+
                         #Generate md5 for the file on disk.
                         for chunk in iter(lambda: f.read(4096), b''):
                             md5_hash.update(chunk)
@@ -494,6 +515,14 @@ class DownloadLibrary:
                             if not(cache_file_info['file_md5'] == md5_hash.hexdigest()):
                                 logger.error("ERROR: Downloaded md5 mismatch in file {local_filename}\n    Saved   File md5:{file_md5}\n    Current File md5:{current_md5}"
                                              .format(local_filename=local_filename,file_md5=cache_file_info['file_md5'],current_md5=md5_hash.hexdigest()))
+                                cache_file_info['verified']=False
+                                self._update_cache_data(cache_file_key,cache_file_info)
+                                logger.info("Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                try: os.makedirs(quarantine_folder)
+                                except OSError: pass
+                                if os.path.exists(quarantine_filename):
+                                    self._rename_old_file(quarantine_filename, time.strftime('%Y-%m-%d-%H%M%S'))
+                                os.rename(local_filename,quarantine_filename)
                                 #continue on error so we won't mark the file as verified.
                                 continue
                         else:
@@ -508,11 +537,39 @@ class DownloadLibrary:
                             if ( cache_file_info['md5'] != cache_file_info['file_md5'] ):
                                 logger.warning("WARNING: Downloaded md5 mismatch in file {local_filename}\n    Web  md5:{md5}\n    File md5:{file_md5}"
                                                .format(local_filename=local_filename,md5=cache_file_info['md5'],file_md5=cache_file_info['file_md5']))
+                                try: os.makedirs(quarantine_folder)
+                                except OSError: pass
+                                if os.path.exists(quarantine_filename):
+                                    #If the quarantine file already exists, check if it's the same as the current file.
+                                    with open(quarantine_filename,'rb') as q:
+                                        quarantine_md5_hash = hashlib.md5()
+                                        for chunk in iter(lambda: q.read(4096), b''):
+                                            quarantine_md5_hash.update(chunk)
+                                        #If the quarantine file is the same, mark as verified.  Otherwise, quarantine current file.
+                                        if (cache_file_info['file_md5'] == quarantine_md5_hash.hexdigest()):
+                                            logger.info("Quarantine same as current. Skipped moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                        else:
+                                            cache_file_info['verified']=False
+                                            self._update_cache_data(cache_file_key,cache_file_info)
+                                            logger.info("Quarantine does not match current.  Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                            self._rename_old_file(quarantine_filename, time.strftime('%Y-%m-%d-%H%M%S'))
+                                            os.rename(local_filename,quarantine_filename)
+                                            continue
+                                else:
+                                    cache_file_info['verified']=False
+                                    self._update_cache_data(cache_file_key,cache_file_info)
+                                    logger.info("Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                    os.rename(local_filename,quarantine_filename)
+                                    continue
 
                         #Mark file as verified.
                         if not 'verified' in cache_file_info:
                             cache_file_info['verified']=True
                             self._update_cache_data(cache_file_key,cache_file_info)
+                        else:
+                            if not(cache_file_info['verified']):
+                                cache_file_info['verified']=True
+                                self._update_cache_data(cache_file_key,cache_file_info)
 
                 except FileNotFoundError:
                     logger.error("ERROR: Local file not found: {local_filename}"
