@@ -75,7 +75,7 @@ class DownloadLibrary:
             for cache_file_key in self.cache_data.keys():
                 cache_purchase_key, cache_purchase_file = cache_file_key.split(":",1)
                 if self.trove is True:
-                    if (not('local_filename_rel' in cache_data[cache_file_key])) and (cache_purchase_key == 'trove'):
+                    if (not('local_filename_rel' in self.cache_data[cache_file_key])) and (cache_purchase_key == 'trove'):
                         self.need_verify_update=True
                         break
                 else:
@@ -158,22 +158,24 @@ class DownloadLibrary:
                         self._update_cache_data(cache_file_key,cache_file_info)
                 continue
 
-            if cache_file_info != {} and self.update is not True:
+            product_folder = os.path.join(
+                self.library_path, 'Humble Trove', title
+            )
+            local_filename = os.path.join(
+                product_folder,
+                web_name,
+            )
+
+            if cache_file_info != {} and self.update is not True and os.path.exists(local_filename):
                 # Do not care about checking for updates at this time
                 continue
 
-            if (file_info['uploaded_at'] != cache_file_info.get('uploaded_at')
-                    and file_info['md5'] != cache_file_info.get('md5')):
-                product_folder = os.path.join(
-                    self.library_path, 'Humble Trove', title
-                )
+            if ((file_info['uploaded_at'] != cache_file_info.get('uploaded_at')
+                     and file_info['md5'] != cache_file_info.get('md5')) or
+                not os.path.exists(local_filename)):
                 # Create directory to save the files to
                 try: os.makedirs(product_folder)  # noqa: E701
                 except OSError: pass  # noqa: E701
-                local_filename = os.path.join(
-                    product_folder,
-                    web_name,
-                )
                 signed_url = self._get_trove_download_url(
                     download['machine_name'],
                     web_name,
@@ -312,7 +314,7 @@ class DownloadLibrary:
                             self._update_cache_data(cache_file_key,cache_file_info)
                     continue
 
-                if cache_file_info != {} and self.update is not True:
+                if cache_file_info != {} and self.update is not True and os.path.exists(local_filename):
                     # Do not care about checking for updates at this time
                     continue
 
@@ -338,7 +340,7 @@ class DownloadLibrary:
                     'md5': file_type['md5'],
                     'local_filename_rel': os.path.relpath(local_filename,self.library_path),
                 }
-                if file_info['url_last_modified'] != cache_file_info.get('url_last_modified'):  # noqa: E501
+                if file_info['url_last_modified'] != cache_file_info.get('url_last_modified') or not os.path.exists(local_filename):  # noqa: E501
                     if 'url_last_modified' in cache_file_info:
                         last_modified = datetime.datetime.strptime(
                             cache_file_info['url_last_modified'],
@@ -481,15 +483,19 @@ class DownloadLibrary:
                 cache_purchase_key, cache_purchase_file = cache_file_key.split(":",1)
                 #Only verify trove files if trove is set.
                 if not(self.trove) and (cache_purchase_key == 'trove'):
+                    logger.debug("DEBUG: Skipping trove file: {local_filename_rel}".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                    continue
+                if (self.trove) and not(cache_purchase_key == 'trove'):
+                    logger.debug("DEBUG: Skipping non-trove file: {local_filename_rel}".format(local_filename_rel=cache_file_info['local_filename_rel']))
                     continue
                 #Is the file in the purchased keys list?
-                if not(cache_purchase_key in self.purchase_keys):
+                if (not(cache_purchase_key in self.purchase_keys) and not(cache_purchase_key == 'trove')):
+                    logger.debug("DEBUG: Skipping file not in keys list: {local_filename_rel}".format(local_filename_rel=cache_file_info['local_filename_rel']))
                     continue
                 #If file was already verified and verifyall is not set, skip to the next file.
                 if 'verified' in cache_file_info:
                     if cache_file_info['verified']:
-                        logger.debug("DEBUG: Verified file found: {local_filename_rel} Verified: {verified}"
-                                .format(local_filename_rel=cache_file_info['local_filename_rel'],verified=cache_file_info['verified']))
+                        logger.debug("DEBUG: Skipping verified file: {local_filename_rel}".format(local_filename_rel=cache_file_info['local_filename_rel']))
                         continue
 
             if 'local_filename_rel' in cache_file_info:
@@ -517,7 +523,7 @@ class DownloadLibrary:
                                              .format(local_filename=local_filename,file_md5=cache_file_info['file_md5'],current_md5=md5_hash.hexdigest()))
                                 cache_file_info['verified']=False
                                 self._update_cache_data(cache_file_key,cache_file_info)
-                                logger.info("Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                logger.info("    Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
                                 try: os.makedirs(quarantine_folder)
                                 except OSError: pass
                                 if os.path.exists(quarantine_filename):
@@ -535,7 +541,7 @@ class DownloadLibrary:
                         #Warn if web md5 mismatches with file md5.
                         if 'md5' in cache_file_info:
                             if ( cache_file_info['md5'] != cache_file_info['file_md5'] ):
-                                logger.warning("WARNING: Downloaded md5 mismatch in file {local_filename}\n    Web  md5:{md5}\n    File md5:{file_md5}"
+                                logger.debug("DEBUG: Downloaded md5 mismatch in file {local_filename}\n    Web  md5:{md5}\n    File md5:{file_md5}"
                                                .format(local_filename=local_filename,md5=cache_file_info['md5'],file_md5=cache_file_info['file_md5']))
                                 try: os.makedirs(quarantine_folder)
                                 except OSError: pass
@@ -547,18 +553,22 @@ class DownloadLibrary:
                                             quarantine_md5_hash.update(chunk)
                                         #If the quarantine file is the same, mark as verified.  Otherwise, quarantine current file.
                                         if (cache_file_info['file_md5'] == quarantine_md5_hash.hexdigest()):
-                                            logger.info("Quarantine same as current. Skipped moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                            logger.debug("INFO: Quarantine same as current. Skipped moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
                                         else:
+                                            logger.warning("WARNING: Downloaded md5 mismatch in file {local_filename}\n    Web  md5:{md5}\n    File md5:{file_md5}"
+                                                    .format(local_filename=local_filename,md5=cache_file_info['md5'],file_md5=cache_file_info['file_md5']))
                                             cache_file_info['verified']=False
                                             self._update_cache_data(cache_file_key,cache_file_info)
-                                            logger.info("Quarantine does not match current.  Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                            logger.info("    Quarantine does not match current.  Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
                                             self._rename_old_file(quarantine_filename, time.strftime('%Y-%m-%d-%H%M%S'))
                                             os.rename(local_filename,quarantine_filename)
                                             continue
                                 else:
+                                    logger.warning("WARNING: Downloaded md5 mismatch in file {local_filename}\n    Web  md5:{md5}\n    File md5:{file_md5}"
+                                            .format(local_filename=local_filename,md5=cache_file_info['md5'],file_md5=cache_file_info['file_md5']))
                                     cache_file_info['verified']=False
                                     self._update_cache_data(cache_file_key,cache_file_info)
-                                    logger.info("Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
+                                    logger.info("    Moving file {local_filename_rel} to quarantine.".format(local_filename_rel=cache_file_info['local_filename_rel']))
                                     os.rename(local_filename,quarantine_filename)
                                     continue
 
